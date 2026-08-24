@@ -9,7 +9,7 @@ export const SKILL_LEVELS = [
 export const defaultState = {
   version: SCHEMA_VERSION,
   settings: {
-    expectedMonthlyRevenue: 32000,
+    expectedMonthlyRevenue: 29820.07575757576,
     targetMonthlyProfit: 0,
     excludeDepreciation: false,
   },
