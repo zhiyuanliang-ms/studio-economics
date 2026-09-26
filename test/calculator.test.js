@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 
 import {
   calculateMargin,
+  calculateModelQuote,
   calculateOrderStructure,
   calculateQuoteSchemes,
+  calculateStudioProfit,
   createSavedQuoteSchemeSnapshot,
 } from '../src/calculator.js'
 import {
@@ -13,13 +15,15 @@ import {
   savePersistedState,
   STORAGE_KEY,
 } from '../src/persistence.js'
+import { SCHEMA_VERSION } from '../src/state.js'
 
 function createCurrentFixture() {
   return {
-    version: 11,
+    version: 12,
     settings: {
       expectedMonthlyRevenue: 0,
       targetMonthlyProfit: 50,
+      targetContributionMarginPct: 40,
       excludeDepreciation: false,
     },
     employees: [
@@ -79,6 +83,7 @@ function createCurrentFixture() {
         id: 'one',
         name: '步兵',
         quantity: 10,
+        quoteModelId: 'model',
         paintingLevelId: 'level-basic',
         unitPrice: 100,
       },
@@ -86,6 +91,7 @@ function createCurrentFixture() {
         id: 'two',
         name: '角色',
         quantity: 2,
+        quoteModelId: 'second-model',
         paintingLevelId: 'level-high',
         unitPrice: 500,
       },
@@ -106,12 +112,14 @@ function createCurrentFixture() {
             id: 'base-process',
             name: '基础工序',
             introducedAtLevelId: 'level-basic',
+            assignedEmployeeId: 'basic',
             hours: 1,
           },
           {
             id: 'high-process',
             name: '进阶工序',
             introducedAtLevelId: 'level-advanced',
+            assignedEmployeeId: 'senior',
             hours: 2,
           },
         ],
@@ -126,6 +134,7 @@ function createCurrentFixture() {
           id: 'second-base',
           name: '基础工序',
           introducedAtLevelId: 'level-basic',
+            assignedEmployeeId: 'basic',
           hours: 0.5,
         }],
       },
@@ -207,18 +216,165 @@ function createLegacyFixture() {
   }
 }
 
-test('员工工资按有效工时乘工资系数计入毛利', () => {
-  const result = calculateMargin(createCurrentFixture())
+test('月利润扣除启用的一次性投入折旧', () => {
+  const result = calculateStudioProfit({
+    settings: {
+      monthlyRevenue: 10000,
+    },
+    fixedCosts: [
+      { id: 'rent', name: '房租', amount: 3500 },
+      { id: 'utilities', name: '水电', amount: 500 },
+    ],
+    oneTimeCosts: [
+      {
+        id: 'fitout',
+        name: '装修',
+        amount: 12000,
+        depreciates: true,
+        depreciationMonths: 24,
+      },
+      {
+        id: 'equipment',
+        name: '设备',
+        amount: 6000,
+        depreciates: false,
+        depreciationMonths: 12,
+      },
+    ],
+  })
 
-  assert.equal(result.totalEffectiveHours, 20)
-  assert.equal(result.salaryCost, 300)
+  assert.equal(result.monthlyRevenue, 10000)
+  assert.equal(result.monthlyFixedCost, 4000)
+  assert.equal(result.oneTimeInvestment, 18000)
+  assert.equal(result.monthlyDepreciation, 500)
+  assert.equal(result.operatingCashProfit, 6000)
+  assert.equal(result.monthlyProfit, 5500)
+  assert.equal(result.status, 'profit')
 })
 
-test('目标利润反推所需月营收', () => {
+test('月营收不足时展示亏损', () => {
+  const result = calculateStudioProfit({
+    settings: {
+      monthlyRevenue: 3000,
+    },
+    fixedCosts: [{ id: 'rent', name: '房租', amount: 4500 }],
+    oneTimeCosts: [],
+  })
+
+  assert.equal(result.monthlyProfit, -1500)
+  assert.equal(result.status, 'loss')
+})
+
+test('回本周期使用折旧前现金结余避免重复扣除投入', () => {
+  const result = calculateStudioProfit({
+    settings: {
+      monthlyRevenue: 10000,
+    },
+    fixedCosts: [{ id: 'rent', name: '房租', amount: 4000 }],
+    oneTimeCosts: [
+      {
+        id: 'fitout',
+        name: '装修',
+        amount: 12000,
+        depreciates: true,
+        depreciationMonths: 24,
+      },
+      {
+        id: 'equipment',
+        name: '设备',
+        amount: 6000,
+        depreciates: true,
+        depreciationMonths: 12,
+      },
+    ],
+  })
+
+  assert.equal(result.monthlyDepreciation, 1000)
+  assert.equal(result.monthlyProfit, 5000)
+  assert.equal(result.operatingCashProfit, 6000)
+  assert.equal(result.paybackMonths, 3)
+})
+
+test('没有利润时一次性投入无法回本', () => {
+  const result = calculateStudioProfit({
+    settings: { monthlyRevenue: 4000 },
+    fixedCosts: [{ id: 'rent', name: '房租', amount: 4000 }],
+    oneTimeCosts: [{ id: 'fitout', name: '装修', amount: 12000 }],
+  })
+
+  assert.equal(result.status, 'break-even')
+  assert.equal(result.paybackMonths, Infinity)
+})
+
+test('模型报价汇总步骤计件成本和预估工时', () => {
+  const result = calculateModelQuote({
+    externalPrice: 850,
+    steps: [
+      {
+        id: 'base',
+        name: '底色',
+        pieceworkCost: 200,
+        estimatedHours: 1.5,
+      },
+      {
+        id: 'detail',
+        name: '细节',
+        pieceworkCost: 350,
+        estimatedHours: 2.25,
+      },
+    ],
+  })
+
+  assert.equal(result.totalCost, 550)
+  assert.equal(result.totalHours, 3.75)
+  assert.equal(result.externalPrice, 850)
+  assert.equal(result.quoteDifference, 300)
+})
+
+test('旧数据补充利润计算输入并保留成本', () => {
+  const migrated = parseImportedState(JSON.stringify(createCurrentFixture()))
+
+  assert.equal(migrated.version, SCHEMA_VERSION)
+  assert.equal(migrated.settings.monthlyRevenue, 10000)
+  assert.equal(Object.hasOwn(migrated.settings, 'showPaybackPeriod'), false)
+  assert.equal(migrated.fixedCosts[0].amount, 50)
+  assert.equal(migrated.oneTimeCosts[0].amount, 100)
+  assert.equal(migrated.oneTimeCosts[0].depreciates, true)
+  assert.equal(migrated.oneTimeCosts[0].depreciationMonths, 10)
+  assert.equal(migrated.modelQuoteDraft.steps.length, 1)
+  assert.deepEqual(migrated.savedModelQuotes, [])
+})
+
+test('没有旧折旧信息的一次性投入默认不折旧', () => {
+  const state = createCurrentFixture()
+  state.version = 14
+  delete state.oneTimeCosts[0].depreciationMonths
+
+  const migrated = parseImportedState(JSON.stringify(state))
+
+  assert.equal(migrated.oneTimeCosts[0].depreciates, false)
+  assert.equal(migrated.oneTimeCosts[0].depreciationMonths, 36)
+})
+
+test('月度人员成本只计入已排产工序的计件工资', () => {
   const result = calculateMargin(createCurrentFixture())
 
-  assert.equal(result.expectedMonthlyRevenue, 410 / 0.9)
-  assert.ok(Math.abs(result.netProfit - 50) < 1e-9)
+  assert.equal(result.totalEffectiveHours, 31)
+  assert.equal(result.pieceworkCost, 510)
+  assert.equal(result.employeeResults[0].assignedHours, 11)
+  assert.equal(result.employeeResults[0].monthlyPieceworkPay, 110)
+  assert.equal(result.employeeResults[1].assignedHours, 20)
+  assert.equal(result.employeeResults[1].monthlyPieceworkPay, 400)
+})
+
+test('月利润按成交收入减订单费、计件工资和固定支出计算', () => {
+  const result = calculateMargin(createCurrentFixture())
+
+  assert.equal(result.expectedMonthlyRevenue, 2000)
+  assert.equal(result.variableCost, 200)
+  assert.equal(result.netProfit, 1230)
+  assert.equal(result.targetProfitGap, 1180)
+  assert.ok(Math.abs(result.revenueForTargetProfit - 110 / 0.645) < 1e-9)
 })
 
 test('剔除月折旧后不计折旧额', () => {
@@ -228,7 +384,8 @@ test('剔除月折旧后不计折旧额', () => {
 
   assert.equal(result.scheduledDepreciation, 10)
   assert.equal(result.monthlyDepreciation, 0)
-  assert.equal(result.expectedMonthlyRevenue, 400 / 0.9)
+  assert.equal(result.netProfit, 1240)
+  assert.ok(Math.abs(result.revenueForTargetProfit - 100 / 0.645) < 1e-9)
 })
 
 test('费用率达到100%时保本营收不可计算', () => {
@@ -236,7 +393,9 @@ test('费用率达到100%时保本营收不可计算', () => {
   state.orderFeeRates[0].ratePct = 100
   const result = calculateMargin(state)
 
-  assert.equal(result.expectedMonthlyRevenue, Infinity)
+  assert.equal(result.expectedMonthlyRevenue, 2000)
+  assert.equal(result.breakEvenRevenue, Infinity)
+  assert.equal(result.revenueForTargetProfit, Infinity)
   assert.ok(result.errors.some((message) => message.includes('低于100%')))
 })
 
@@ -245,21 +404,28 @@ test('月度订单只按数量乘以单价汇总营收', () => {
 
   assert.equal(result.totalQuantity, 12)
   assert.equal(result.monthlyRevenue, 2000)
+  assert.equal(result.totalPieceworkCost, 510)
+  assert.equal(result.totalHours, 31)
   assert.equal(result.averageUnitPrice, 2000 / 12)
 })
 
-test('模型报价按各等级新增工时累积', () => {
+test('模型报价按工序估时核定不同画师的计件工资', () => {
   const result = calculateQuoteSchemes(createCurrentFixture())
   const scheme = result.schemeResults[0]
   const quote = scheme.modelResults[0]
 
   assert.equal(quote.unitHours, 3)
-  assert.equal(quote.breakdown[0].subtotal, 100)
-  assert.equal(quote.breakdown[1].subtotal, 400)
-  assert.equal(quote.unitPrice, 500)
-  assert.equal(quote.totalPrice, 1500)
+  assert.equal(quote.breakdown[0].assignedEmployeeName, '基础画师')
+  assert.equal(quote.breakdown[0].pieceworkPay, 10)
+  assert.equal(quote.breakdown[1].assignedEmployeeName, '高级画师')
+  assert.equal(quote.breakdown[1].pieceworkPay, 40)
+  assert.equal(quote.unitPieceworkCost, 50)
+  assert.equal(quote.unitPrice, 100)
+  assert.equal(quote.unitContributionProfit, 40)
+  assert.equal(quote.totalPrice, 300)
   assert.equal(scheme.totalModels, 5)
-  assert.equal(scheme.totalPrice, 1600)
+  assert.equal(scheme.totalPieceworkCost, 160)
+  assert.equal(scheme.totalPrice, 320)
 })
 
 test('模型报价调整作用于累积价格', () => {
@@ -268,9 +434,24 @@ test('模型报价调整作用于累积价格', () => {
   const result = calculateQuoteSchemes(state)
   const quote = result.schemeResults[0].modelResults[0]
 
-  assert.equal(quote.unitBasePrice, 500)
-  assert.equal(quote.unitPrice, 600)
-  assert.equal(result.schemeResults[0].totalPrice, 1900)
+  assert.equal(quote.unitBasePrice, 100)
+  assert.equal(quote.unitPrice, 120)
+  assert.equal(quote.unitPieceworkCost, 50)
+  assert.equal(result.schemeResults[0].totalPrice, 380)
+})
+
+test('工序不能派给技能低于等级门槛的画师', () => {
+  const state = createCurrentFixture()
+  state.quoteSchemes[0].models[0].processes[1].assignedEmployeeId = 'basic'
+
+  const result = calculateQuoteSchemes(state)
+
+  assert.ok(result.errors.some((message) => (
+    message.includes('基础画师') && message.includes('技能不足')
+  )))
+  assert.ok(calculateMargin(state).errors.some((message) => (
+    message.includes('订单') && message.includes('技能不足')
+  )))
 })
 
 test('目标等级不限制其他等级工序增加报价', () => {
@@ -281,27 +462,29 @@ test('目标等级不限制其他等级工序增加报价', () => {
 
   assert.equal(model.targetLevelName, '基础')
   assert.equal(model.unitHours, 3)
-  assert.equal(model.unitPrice, 500)
-  assert.equal(model.breakdown[1].subtotal, 400)
+  assert.equal(model.unitPrice, 100)
+  assert.equal(model.breakdown[1].pieceworkPay, 40)
 })
 
 test('旧版倍率与全局工序自动迁移为等级时薪和模型报价', () => {
   const migrated = parseImportedState(JSON.stringify(createLegacyFixture()))
 
-  assert.equal(migrated.version, 11)
+  assert.equal(migrated.version, SCHEMA_VERSION)
   assert.deepEqual(
     migrated.paintingLevels.map((level) => level.name),
     ['基础', '进阶', '高阶'],
   )
-  assert.equal(migrated.paintingLevels[0].hourlyRate, 20)
-  assert.equal(migrated.paintingLevels[1].hourlyRate, 220)
-  assert.equal(migrated.paintingLevels[2].hourlyRate, 40)
+  assert.equal(Object.hasOwn(migrated.paintingLevels[0], 'hourlyRate'), false)
   assert.equal(migrated.paintingLevels[2].requiredSkillRank, 3)
   assert.equal(migrated.orders[0].quantity, 6)
   assert.equal(migrated.orders[0].unitPrice, 100)
   assert.equal(migrated.orders[0].paintingLevelId, 'level-high')
   assert.equal(migrated.quoteSchemes[0].models[0].processes[0].name, '共同工序')
   assert.equal(migrated.quoteSchemes[0].models[0].processes[0].hours, 1)
+  assert.equal(
+    migrated.quoteSchemes[0].models[0].processes[0].assignedEmployeeId,
+    'basic',
+  )
   assert.equal(
     migrated.quoteSchemes[0].models[0].processes[0].introducedAtLevelId,
     'level-basic',
@@ -314,7 +497,11 @@ test('旧版倍率与全局工序自动迁移为等级时薪和模型报价', ()
   )
   assert.equal(migrated.employees[1].name, '主理人 / 高级画师')
   assert.equal(migrated.employees[1].skillRank, 3)
+  assert.equal(migrated.employees[1].pieceRate, 20)
+  assert.equal(migrated.employees[1].monthlyCapacityHours, 10)
+  assert.equal(Object.hasOwn(migrated.employees[1], 'wageCoefficient'), false)
   assert.equal(migrated.oneTimeCosts[0].depreciationMonths, 10)
+  assert.equal(migrated.oneTimeCosts[0].depreciates, true)
   assert.equal(Object.hasOwn(migrated.oneTimeCosts[0], 'recoveryMonths'), false)
   assert.equal(migrated.settings.excludeDepreciation, false)
   assert.equal(Object.hasOwn(migrated.settings, 'quoteMultiplier'), false)
@@ -338,17 +525,42 @@ test('自动保存后再次打开保留新结构参数', () => {
 
   try {
     const state = createCurrentFixture()
-    state.paintingLevels[0].hourlyRate = 188
+    state.employees[0].pieceRate = 188
     state.savedQuotes.push({
       id: 'saved',
       name: '已保存报价',
       finalPrice: 500,
     })
+    state.modelQuoteDraft = {
+      sourceSavedQuoteId: 'saved-model',
+      name: '战车',
+      externalPrice: 880,
+      steps: [{
+        id: 'step',
+        name: '涂装',
+        pieceworkCost: 500,
+        estimatedHours: 4,
+      }],
+    }
+    state.savedModelQuotes = [{
+      id: 'saved-model',
+      name: '战车',
+      externalPrice: 880,
+      updatedAt: '2026-09-25T00:00:00.000Z',
+      steps: [{
+        id: 'step',
+        name: '涂装',
+        pieceworkCost: 500,
+        estimatedHours: 4,
+      }],
+    }]
     savePersistedState(state)
     const loaded = loadPersistedState()
 
-    assert.equal(loaded.paintingLevels[0].hourlyRate, 188)
+    assert.equal(loaded.employees[0].pieceRate, 188)
     assert.equal(loaded.savedQuotes[0].name, '已保存报价')
+    assert.equal(loaded.modelQuoteDraft.sourceSavedQuoteId, 'saved-model')
+    assert.equal(loaded.savedModelQuotes[0].steps[0].pieceworkCost, 500)
     assert.ok(values.has(STORAGE_KEY))
   } finally {
     if (previousLocalStorage === undefined) delete globalThis.localStorage
@@ -356,7 +568,7 @@ test('自动保存后再次打开保留新结构参数', () => {
   }
 })
 
-test('保存报价快照包含工序、时薪和最终价格', () => {
+test('保存报价快照包含工序承接人、计件工资和最终价格', () => {
   const schemeResult = calculateQuoteSchemes(createCurrentFixture()).schemeResults[0]
   const snapshot = createSavedQuoteSchemeSnapshot(
     schemeResult,
@@ -367,10 +579,13 @@ test('保存报价快照包含工序、时薪和最终价格', () => {
   assert.equal(snapshot.sourceSchemeId, 'scheme')
   assert.equal(snapshot.totalModels, 5)
   assert.equal(snapshot.totalHours, 10)
-  assert.equal(snapshot.totalPrice, 1600)
+  assert.equal(snapshot.totalPieceworkCost, 160)
+  assert.equal(snapshot.totalPrice, 320)
   assert.equal(snapshot.models.length, 2)
   assert.equal(snapshot.models[0].quantity, 3)
-  assert.equal(snapshot.models[0].processes[1].hourlyRate, 200)
+  assert.equal(snapshot.models[0].processes[1].assignedEmployeeName, '高级画师')
+  assert.equal(snapshot.models[0].processes[1].pieceRate, 20)
+  assert.equal(snapshot.models[0].processes[1].pieceworkPay, 40)
   assert.equal(snapshot.savedAt, '2026-08-24T00:00:00.000Z')
 })
 

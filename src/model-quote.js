@@ -19,21 +19,54 @@ let activeSavedQuoteId = null
 app.innerHTML = `
   <header class="app-header">
     <div>
-      <h1>模型报价计算器</h1>
+      <p class="eyebrow">Quote and dispatch</p>
+      <h1>模型计件报价与工序派单</h1>
       <p class="header-description">
-        一个报价方案可以包含多个模型；每个模型独立计算工序报价，方案底部汇总总价。
+        先拆解标准工序并指定承接画师，再由计件工资和目标贡献毛利率反推客户报价。画师拿固定件工资，工作室承担估时风险与经营利润。
       </p>
     </div>
     <div class="header-side">
       <nav class="page-nav" aria-label="计算器页面">
-        <a href="./index.html">毛利计算器</a>
-        <a href="./pricing.html">等级定价与订单</a>
-        <a class="active" href="./model-quote.html">模型报价</a>
+        <a href="./index.html">经营总览</a>
+        <a href="./pricing.html">月度生产</a>
+        <a class="active" href="./model-quote.html">计件报价</a>
       </nav>
     </div>
   </header>
 
   <main>
+    <section class="summary-section">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">统一报价策略</p>
+          <h2>从计件成本反推售价</h2>
+        </div>
+        <a class="button button-link" href="./pricing.html">管理等级与月度生产</a>
+      </div>
+      <div class="pricing-policy-grid">
+        <label class="field important-field">
+          <span>目标贡献毛利率</span>
+          <div class="input-with-suffix">
+            <input type="number" min="0" max="99" step="1" data-setting="targetContributionMarginPct">
+            <span>%</span>
+          </div>
+        </label>
+        <div class="policy-metric">
+          <span>订单额外费用率</span>
+          <strong id="policy-fee-rate">—</strong>
+        </div>
+        <div class="policy-metric">
+          <span>售价中的计件成本上限</span>
+          <strong id="policy-cost-rate">—</strong>
+        </div>
+        <div class="policy-formula">
+          <span>推荐报价</span>
+          <strong>计件工资 ÷ 计件成本上限</strong>
+        </div>
+      </div>
+      <div id="quote-status" class="model-status quote-status"></div>
+    </section>
+
     <section class="input-section">
       <div class="section-heading">
         <div>
@@ -98,6 +131,11 @@ function formatHours(value) {
   return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 1 })}h`
 }
 
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return '无法计算'
+  return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 1 })}%`
+}
+
 function getLevelOptions(selectedId) {
   return [...state.paintingLevels]
     .sort((left, right) => toNumber(left.rank) - toNumber(right.rank))
@@ -112,6 +150,31 @@ function skillName(rank) {
   return SKILL_LEVELS.find((skill) => skill.rank === toNumber(rank))?.name ?? ''
 }
 
+function getEmployeeOptions(selectedId, requiredSkillRank) {
+  if (state.employees.length === 0) {
+    return '<option value="">请先在经营总览添加画师</option>'
+  }
+  return [...state.employees]
+    .sort((left, right) => toNumber(left.skillRank) - toNumber(right.skillRank))
+    .map((employee) => {
+      const qualified = toNumber(employee.skillRank) >= toNumber(requiredSkillRank)
+      const selected = employee.id === selectedId
+      return `<option value="${escapeHtml(employee.id)}" ${selected ? 'selected' : ''} ${qualified ? '' : 'disabled'}>`
+        + `${escapeHtml(employee.name)} · ${escapeHtml(skillName(employee.skillRank))} · ${formatMoney(toNumber(employee.pieceRate))}/h`
+        + `${qualified ? '' : '（技能不足）'}</option>`
+    })
+    .join('')
+}
+
+function getDefaultPainterId(levelId) {
+  const requiredSkillRank = toNumber(
+    state.paintingLevels.find((level) => level.id === levelId)?.requiredSkillRank,
+  )
+  return [...state.employees]
+    .filter((employee) => toNumber(employee.skillRank) >= requiredSkillRank)
+    .sort((left, right) => toNumber(left.pieceRate) - toNumber(right.pieceRate))[0]?.id ?? ''
+}
+
 function getSchemeResult(schemeId) {
   return schemeResult.schemeResults.find((scheme) => scheme.schemeId === schemeId)
 }
@@ -122,6 +185,30 @@ function getScheme(schemeId) {
 
 function getModel(scheme, modelId) {
   return scheme?.models.find((model) => model.id === modelId)
+}
+
+function renderPricingPolicy() {
+  const totalFeeRatePct = state.orderFeeRates.reduce(
+    (sum, fee) => sum + Math.max(0, toNumber(fee.ratePct)),
+    0,
+  )
+  const targetMarginPct = Math.max(
+    0,
+    toNumber(state.settings.targetContributionMarginPct),
+  )
+  document.querySelector('[data-setting="targetContributionMarginPct"]').value = targetMarginPct
+  document.querySelector('#policy-fee-rate').textContent = formatPercent(totalFeeRatePct)
+  document.querySelector('#policy-cost-rate').textContent = formatPercent(
+    100 - totalFeeRatePct - targetMarginPct,
+  )
+  const status = document.querySelector('#quote-status')
+  if (schemeResult.errors.length > 0) {
+    status.className = 'model-status quote-status status-error'
+    status.innerHTML = `<strong>报价方案需要处理</strong><span>${escapeHtml(schemeResult.errors.join('；'))}</span>`
+  } else {
+    status.className = 'model-status quote-status status-positive'
+    status.innerHTML = '<strong>计件报价模型有效</strong><span>所有工序均已分配给技能达标的画师。</span>'
+  }
 }
 
 function renderSchemes() {
@@ -155,6 +242,7 @@ function renderSchemes() {
             </div>
             <span>模型总数：<strong id="scheme-total-models-${scheme.id}">${computedScheme?.totalModels ?? 0}</strong></span>
             <span>总工时：<strong id="scheme-total-hours-${scheme.id}">${formatHours(computedScheme?.totalHours ?? 0)}</strong></span>
+            <span>计件工资：<strong id="scheme-total-cost-${scheme.id}">${formatMoney(computedScheme?.totalPieceworkCost ?? 0)}</strong></span>
             <span>方案总价：<strong id="scheme-total-price-${scheme.id}">${formatMoney(computedScheme?.totalPrice ?? 0)}</strong></span>
           </div>
         </article>
@@ -196,9 +284,10 @@ function renderModel(scheme, model, computed) {
               <th>工序名称</th>
               <th>等级</th>
               <th>最低画师技能</th>
-              <th>每小时报价</th>
-              <th>工时</th>
-              <th>价格小计</th>
+              <th>承接画师</th>
+              <th>核定计件时薪</th>
+              <th>标准工时</th>
+              <th>固定计件工资</th>
               <th></th>
             </tr>
           </thead>
@@ -212,12 +301,17 @@ function renderModel(scheme, model, computed) {
                   </select>
                 </td>
                 <td>${escapeHtml(skillName(process.requiredSkillRank))}</td>
-                <td class="computed">${formatMoney(process.hourlyRate)}/h</td>
+                <td>
+                  <select data-process-scheme-id="${scheme.id}" data-process-model-id="${model.id}" data-process-id="${process.processId}" data-process-field="assignedEmployeeId">
+                    ${getEmployeeOptions(process.assignedEmployeeId, process.requiredSkillRank)}
+                  </select>
+                </td>
+                <td class="computed" id="process-rate-${scheme.id}-${model.id}-${process.processId}">${formatMoney(process.pieceRate)}/h</td>
                 <td class="input-with-suffix">
                   <input type="number" min="0" step="0.1" data-process-scheme-id="${scheme.id}" data-process-model-id="${model.id}" data-process-id="${process.processId}" data-process-field="hours" value="${process.hours}">
                   <span>h</span>
                 </td>
-                <td class="computed" id="process-subtotal-${scheme.id}-${model.id}-${process.processId}">${formatMoney(process.subtotal)}</td>
+                <td class="computed" id="process-pay-${scheme.id}-${model.id}-${process.processId}">${formatMoney(process.pieceworkPay)}</td>
                 <td><button type="button" class="icon-button" data-remove-process-scheme-id="${scheme.id}" data-remove-process-model-id="${model.id}" data-remove-process-id="${process.processId}" aria-label="删除工序">×</button></td>
               </tr>
             `).join('')}
@@ -227,9 +321,12 @@ function renderModel(scheme, model, computed) {
 
       <div class="model-quote-total">
         <button type="button" class="button" data-add-process-scheme-id="${scheme.id}" data-add-process-model-id="${model.id}">添加工序</button>
-        <span>单模型工时：<strong id="model-unit-hours-${scheme.id}-${model.id}">${formatHours(computed?.unitHours ?? 0)}</strong></span>
-        <span>单模型报价：<strong id="model-unit-price-${scheme.id}-${model.id}">${formatMoney(computed?.unitPrice ?? 0)}</strong></span>
-        <span>模型小计：<strong id="model-total-price-${scheme.id}-${model.id}">${formatMoney(computed?.totalPrice ?? 0)}</strong></span>
+        <span>标准工时：<strong id="model-unit-hours-${scheme.id}-${model.id}">${formatHours(computed?.unitHours ?? 0)}</strong></span>
+        <span>计件工资：<strong id="model-unit-cost-${scheme.id}-${model.id}">${formatMoney(computed?.unitPieceworkCost ?? 0)}</strong></span>
+        <span>推荐报价：<strong id="model-unit-price-${scheme.id}-${model.id}">${formatMoney(computed?.unitPrice ?? 0)}</strong></span>
+        <span>单件贡献：<strong id="model-unit-contribution-${scheme.id}-${model.id}">${formatMoney(computed?.unitContributionProfit ?? 0)}</strong></span>
+        <span>贡献率：<strong id="model-margin-${scheme.id}-${model.id}">${formatPercent(computed?.actualContributionMarginPct ?? 0)}</strong></span>
+        <span>报价小计：<strong id="model-total-price-${scheme.id}-${model.id}">${formatMoney(computed?.totalPrice ?? 0)}</strong></span>
       </div>
     </article>
   `
@@ -262,8 +359,13 @@ function updateDerivedCells() {
     scheme.models.forEach((model) => {
       const computed = modelResultMap.get(model.id)
       computed?.breakdown.forEach((process) => {
-        document.querySelector(`#process-subtotal-${CSS.escape(scheme.id)}-${CSS.escape(model.id)}-${CSS.escape(process.processId)}`)?.replaceChildren(
-          document.createTextNode(formatMoney(process.subtotal)),
+        replaceText(
+          `#process-rate-${CSS.escape(scheme.id)}-${CSS.escape(model.id)}-${CSS.escape(process.processId)}`,
+          `${formatMoney(process.pieceRate)}/h`,
+        )
+        replaceText(
+          `#process-pay-${CSS.escape(scheme.id)}-${CSS.escape(model.id)}-${CSS.escape(process.processId)}`,
+          formatMoney(process.pieceworkPay),
         )
       })
       replaceText(
@@ -271,8 +373,20 @@ function updateDerivedCells() {
         formatHours(computed?.unitHours ?? 0),
       )
       replaceText(
+        `#model-unit-cost-${CSS.escape(scheme.id)}-${CSS.escape(model.id)}`,
+        formatMoney(computed?.unitPieceworkCost ?? 0),
+      )
+      replaceText(
         `#model-unit-price-${CSS.escape(scheme.id)}-${CSS.escape(model.id)}`,
         formatMoney(computed?.unitPrice ?? 0),
+      )
+      replaceText(
+        `#model-unit-contribution-${CSS.escape(scheme.id)}-${CSS.escape(model.id)}`,
+        formatMoney(computed?.unitContributionProfit ?? 0),
+      )
+      replaceText(
+        `#model-margin-${CSS.escape(scheme.id)}-${CSS.escape(model.id)}`,
+        formatPercent(computed?.actualContributionMarginPct ?? 0),
       )
       replaceText(
         `#model-total-price-${CSS.escape(scheme.id)}-${CSS.escape(model.id)}`,
@@ -286,6 +400,10 @@ function updateDerivedCells() {
     replaceText(
       `#scheme-total-hours-${CSS.escape(scheme.id)}`,
       formatHours(computedScheme?.totalHours ?? 0),
+    )
+    replaceText(
+      `#scheme-total-cost-${CSS.escape(scheme.id)}`,
+      formatMoney(computedScheme?.totalPieceworkCost ?? 0),
     )
     replaceText(
       `#scheme-total-price-${CSS.escape(scheme.id)}`,
@@ -302,6 +420,7 @@ function recalculate({ renderAll = false } = {}) {
   schemeResult = calculateQuoteSchemes(state)
   if (renderAll) renderSchemes()
   else updateDerivedCells()
+  renderPricingPolicy()
   renderSavedQuotesDropdown()
   persist()
 }
@@ -319,6 +438,7 @@ function createEmptyModel(name = '新模型') {
       id: createId('process'),
       name: '基础工序',
       introducedAtLevelId: firstLevelId,
+      assignedEmployeeId: getDefaultPainterId(firstLevelId),
       hours: 0,
     }],
   }
@@ -357,6 +477,7 @@ function addProcess(schemeId, modelId) {
     id: createId('process'),
     name: '新工序',
     introducedAtLevelId: firstLevelId,
+    assignedEmployeeId: getDefaultPainterId(firstLevelId),
     hours: 0,
   })
   recalculate({ renderAll: true })
@@ -377,6 +498,10 @@ function saveScheme(schemeId, button) {
   const computed = getSchemeResult(schemeId)
   if (!computed || computed.modelResults.length === 0) {
     globalThis.alert('当前报价方案没有可保存的模型。')
+    return
+  }
+  if (schemeResult.errors.length > 0) {
+    globalThis.alert(`请先修复报价方案：${schemeResult.errors.join('；')}`)
     return
   }
   state.savedQuotes.push({
@@ -419,6 +544,15 @@ function loadSavedScheme(savedId) {
         introducedAtLevelId: availableLevels.has(process.levelId)
           ? process.levelId
           : firstLevelId,
+        assignedEmployeeId: state.employees.some(
+          (employee) => employee.id === process.assignedEmployeeId,
+        )
+          ? process.assignedEmployeeId
+          : getDefaultPainterId(
+            availableLevels.has(process.levelId)
+              ? process.levelId
+              : firstLevelId,
+          ),
         hours: process.hours,
       })),
     })),
@@ -467,6 +601,12 @@ function exportSavedQuotes() {
 }
 
 function updateInput(input) {
+  if (input.dataset.setting) {
+    state.settings[input.dataset.setting] = toNumber(input.value)
+    recalculate()
+    return
+  }
+
   if (input.dataset.schemeId) {
     const scheme = getScheme(input.dataset.schemeId)
     if (!scheme) return
@@ -498,7 +638,20 @@ function updateInput(input) {
     if (!process) return
     const field = input.dataset.processField
     process[field] = input.type === 'number' ? toNumber(input.value) : input.value
-    recalculate({ renderAll: field === 'introducedAtLevelId' })
+    if (field === 'introducedAtLevelId') {
+      const level = state.paintingLevels.find(
+        (candidate) => candidate.id === process.introducedAtLevelId,
+      )
+      const employee = state.employees.find(
+        (candidate) => candidate.id === process.assignedEmployeeId,
+      )
+      if (toNumber(employee?.skillRank) < toNumber(level?.requiredSkillRank)) {
+        process.assignedEmployeeId = getDefaultPainterId(level?.id)
+      }
+      recalculate({ renderAll: true })
+      return
+    }
+    recalculate()
   }
 }
 

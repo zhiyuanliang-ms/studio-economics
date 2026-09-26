@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 16
 
 export const SKILL_LEVELS = [
   { rank: 1, name: '基础' },
@@ -9,8 +9,10 @@ export const SKILL_LEVELS = [
 export const defaultState = {
   version: SCHEMA_VERSION,
   settings: {
-    expectedMonthlyRevenue: 14044.913691972513,
-    targetMonthlyProfit: 1,
+    monthlyRevenue: 10000,
+    expectedMonthlyRevenue: 0,
+    targetMonthlyProfit: 5000,
+    targetContributionMarginPct: 45,
     excludeDepreciation: false,
   },
   employees: [
@@ -19,95 +21,64 @@ export const defaultState = {
       name: '首席',
       fullTime: true,
       skillRank: 3,
-      effectiveDays: 20,
-      effectiveHoursPerDay: 8,
-      wageCoefficient: 40,
+      monthlyCapacityHours: 160,
+      pieceRate: 40,
     },
     {
       id: 'employee-senior',
       name: '全职画师1',
       fullTime: true,
       skillRank: 1,
-      effectiveDays: 20,
-      effectiveHoursPerDay: 8,
-      wageCoefficient: 15,
+      monthlyCapacityHours: 160,
+      pieceRate: 15,
     },
   ],
   oneTimeCosts: [
-    { id: 'investment-fitout', name: '装修', amount: 30000, depreciationMonths: 60 },
-    { id: 'investment-equipment', name: '设备', amount: 10000, depreciationMonths: 60 },
+    {
+      id: 'investment-fitout',
+      name: '装修',
+      amount: 30000,
+      depreciates: true,
+      depreciationMonths: 60,
+    },
+    {
+      id: 'investment-equipment',
+      name: '设备',
+      amount: 10000,
+      depreciates: true,
+      depreciationMonths: 60,
+    },
   ],
   fixedCosts: [
     { id: 'fixed-rent', name: '房租', amount: 3500 },
     { id: 'fixed-utilities', name: '杂项', amount: 1000 },
   ],
+  modelQuoteDraft: {
+    sourceSavedQuoteId: null,
+    name: '',
+    externalPrice: 0,
+    steps: [
+      {
+        id: 'model-quote-step-initial',
+        name: '步骤 1',
+        pieceworkCost: 0,
+        estimatedHours: 0,
+      },
+    ],
+  },
+  savedModelQuotes: [],
   orderFeeRates: [
     { id: 'fee-materials', name: '持续耗材消耗', ratePct: 0.25 },
     { id: 'fee-shipping', name: '包装与运费', ratePct: 0.3 },
     { id: 'fee-platform', name: '平台与支付手续费', ratePct: 0 },
   ],
   paintingLevels: [
-    { id: 'level-basic', name: '基础', rank: 1, hourlyRate: 25, requiredSkillRank: 1 },
-    { id: 'level-advanced', name: '进阶', rank: 2, hourlyRate: 50, requiredSkillRank: 2 },
-    { id: 'level-high', name: '高阶', rank: 3, hourlyRate: 80, requiredSkillRank: 3 },
+    { id: 'level-basic', name: '基础', rank: 1, requiredSkillRank: 1 },
+    { id: 'level-advanced', name: '进阶', rank: 2, requiredSkillRank: 2 },
+    { id: 'level-high', name: '高阶', rank: 3, requiredSkillRank: 3 },
   ],
   orders: [],
-  savedQuotes: [
-    {
-      id: 'saved-quote-8dc70b1b-548a-46cc-9ba9-52e4e7b69ba9',
-      savedAt: '2026-08-24T14:37:53.071Z',
-      name: '方案1',
-      totalModels: 1,
-      totalHours: 2.5,
-      totalPrice: 78.275,
-      models: [
-        {
-          name: '仲裁者',
-          quantity: 1,
-          targetLevelId: 'level-advanced',
-          targetLevelName: '进阶',
-          unitHours: 2.5,
-          unitPrice: 78.275,
-          totalHours: 2.5,
-          totalPrice: 78.275,
-          quoteAdjustmentPct: 1,
-          processes: [
-            {
-              name: '工序1',
-              levelId: 'level-basic',
-              levelName: '基础',
-              requiredSkillRank: 1,
-              hourlyRate: 25,
-              hours: 0.5,
-              included: true,
-              subtotal: 12.5,
-            },
-            {
-              name: '工序2',
-              levelId: 'level-basic',
-              levelName: '基础',
-              requiredSkillRank: 1,
-              hourlyRate: 25,
-              hours: 1,
-              included: true,
-              subtotal: 25,
-            },
-            {
-              name: '工序3',
-              levelId: 'level-advanced',
-              levelName: '进阶',
-              requiredSkillRank: 2,
-              hourlyRate: 40,
-              hours: 1,
-              included: true,
-              subtotal: 40,
-            },
-          ],
-        },
-      ],
-      sourceSchemeId: null,
-    },
-  ],
+  savedQuotes: [],
   quoteSchemes: [
     {
       id: 'scheme-e48f787a-4106-4773-8ec2-24a7c8d83261',
@@ -123,18 +94,21 @@ export const defaultState = {
             id: 'process-f82a47d7-ea07-49ee-b23a-a649b26d3bc2',
             name: '工序1',
             introducedAtLevelId: 'level-basic',
+            assignedEmployeeId: 'employee-senior',
             hours: 0.5,
           },
           {
             id: 'process-c025da2e-7d70-40da-b2c3-6254d3165cd2',
             name: '工序2',
             introducedAtLevelId: 'level-basic',
+            assignedEmployeeId: 'employee-senior',
             hours: 1,
           },
           {
             id: 'process-6972a9c7-bf3a-4b14-ab7b-7e462630c6c3',
             name: '工序3',
             introducedAtLevelId: 'level-advanced',
+            assignedEmployeeId: 'employee-basic',
             hours: 1,
           },
         ],
@@ -429,13 +403,182 @@ function normalizeFixedPaintingLevels(state) {
   })
 }
 
+function normalizePieceworkState(state, sourceVersion) {
+  if (!Object.hasOwn(state.settings, 'targetContributionMarginPct')) {
+    state.settings.targetContributionMarginPct = 45
+  }
+  state.settings.targetContributionMarginPct = nonNegative(
+    state.settings.targetContributionMarginPct,
+  )
+
+  state.employees.forEach((employee) => {
+    if (!Object.hasOwn(employee, 'pieceRate')) {
+      employee.pieceRate = nonNegative(employee.wageCoefficient)
+    }
+    if (!Object.hasOwn(employee, 'monthlyCapacityHours')) {
+      employee.monthlyCapacityHours = nonNegative(employee.effectiveDays)
+        * nonNegative(employee.effectiveHoursPerDay)
+    }
+    employee.pieceRate = nonNegative(employee.pieceRate)
+    employee.monthlyCapacityHours = nonNegative(employee.monthlyCapacityHours)
+    delete employee.wageCoefficient
+    delete employee.effectiveDays
+    delete employee.effectiveHoursPerDay
+  })
+
+  const levelMap = new Map(
+    state.paintingLevels.map((level) => [level.id, level]),
+  )
+  const employeeMap = new Map(
+    state.employees.map((employee) => [employee.id, employee]),
+  )
+  const pickPainter = (levelId) => {
+    const requiredSkillRank = Number(
+      levelMap.get(levelId)?.requiredSkillRank,
+    ) || 1
+    return [...state.employees]
+      .filter((employee) => Number(employee.skillRank) >= requiredSkillRank)
+      .sort((left, right) => left.pieceRate - right.pieceRate)[0]?.id ?? null
+  }
+
+  const models = state.quoteSchemes.flatMap((scheme) => scheme.models)
+  const modelMap = new Map(models.map((model) => [model.id, model]))
+  state.quoteSchemes.forEach((scheme) => {
+    scheme.models.forEach((model) => {
+      model.processes.forEach((process) => {
+        if (
+          sourceVersion < 12
+          || !employeeMap.has(process.assignedEmployeeId)
+        ) {
+          process.assignedEmployeeId = pickPainter(
+            process.introducedAtLevelId,
+          )
+        }
+      })
+    })
+  })
+
+  state.orders.forEach((order) => {
+    if (!modelMap.has(order.quoteModelId)) {
+      order.quoteModelId = models.find(
+        (model) => model.name === order.name,
+      )?.id ?? null
+    }
+  })
+
+  state.savedQuotes.forEach((quote) => {
+    quote.models.forEach((model) => {
+      model.processes.forEach((process) => {
+        if (!process.assignedEmployeeId) {
+          process.assignedEmployeeId = pickPainter(process.levelId)
+        }
+        const employee = employeeMap.get(process.assignedEmployeeId)
+        if (!process.assignedEmployeeName && employee) {
+          process.assignedEmployeeName = employee.name
+        }
+        if (!Object.hasOwn(process, 'pieceRate')) {
+          process.pieceRate = nonNegative(employee?.pieceRate)
+        }
+        if (!Object.hasOwn(process, 'pieceworkPay')) {
+          process.pieceworkPay = nonNegative(process.hours)
+            * nonNegative(process.pieceRate)
+        }
+        delete process.hourlyRate
+      })
+      if (!Object.hasOwn(model, 'unitPieceworkCost')) {
+        model.unitPieceworkCost = model.processes.reduce(
+          (sum, process) => sum + nonNegative(process.pieceworkPay),
+          0,
+        )
+      }
+      model.totalPieceworkCost = nonNegative(model.unitPieceworkCost)
+        * nonNegative(model.quantity)
+    })
+    quote.totalPieceworkCost = quote.models.reduce(
+      (sum, model) => sum + nonNegative(model.totalPieceworkCost),
+      0,
+    )
+  })
+
+  state.paintingLevels.forEach((level) => {
+    delete level.hourlyRate
+  })
+}
+
+function normalizeProfitSettings(state) {
+  if (!Object.hasOwn(state.settings, 'monthlyRevenue')) {
+    const legacyRevenue = Number(state.settings.expectedMonthlyRevenue)
+    state.settings.monthlyRevenue = Number.isFinite(legacyRevenue)
+      && legacyRevenue > 0
+      ? legacyRevenue
+      : defaultState.settings.monthlyRevenue
+  }
+  state.settings.monthlyRevenue = nonNegative(state.settings.monthlyRevenue)
+  delete state.settings.showPaybackPeriod
+}
+
+function normalizeModelQuoteStep(step, index, prefix) {
+  const candidate = step && typeof step === 'object' ? step : {}
+  return {
+    id: String(candidate.id || `${prefix}-step-${index + 1}`),
+    name: String(candidate.name ?? ''),
+    pieceworkCost: nonNegative(candidate.pieceworkCost),
+    estimatedHours: nonNegative(candidate.estimatedHours),
+  }
+}
+
+function normalizeModelQuoteState(state) {
+  const defaultDraft = defaultState.modelQuoteDraft
+  const draft = state.modelQuoteDraft
+    && typeof state.modelQuoteDraft === 'object'
+    ? state.modelQuoteDraft
+    : cloneState(defaultDraft)
+  const draftSteps = Array.isArray(draft.steps)
+    ? draft.steps
+    : cloneState(defaultDraft.steps)
+
+  state.modelQuoteDraft = {
+    sourceSavedQuoteId: typeof draft.sourceSavedQuoteId === 'string'
+      ? draft.sourceSavedQuoteId
+      : null,
+    name: String(draft.name ?? ''),
+    externalPrice: nonNegative(draft.externalPrice),
+    steps: draftSteps.map((step, index) => (
+      normalizeModelQuoteStep(step, index, 'draft')
+    )),
+  }
+
+  const savedQuotes = Array.isArray(state.savedModelQuotes)
+    ? state.savedModelQuotes
+    : []
+  state.savedModelQuotes = savedQuotes.map((quote, index) => {
+    const candidate = quote && typeof quote === 'object' ? quote : {}
+    const id = String(candidate.id || `saved-model-quote-${index + 1}`)
+    return {
+      id,
+      name: String(candidate.name ?? ''),
+      externalPrice: nonNegative(candidate.externalPrice),
+      updatedAt: String(candidate.updatedAt ?? ''),
+      steps: (Array.isArray(candidate.steps) ? candidate.steps : [])
+        .map((step, stepIndex) => (
+          normalizeModelQuoteStep(step, stepIndex, id)
+        )),
+    }
+  })
+
+  const savedIds = new Set(state.savedModelQuotes.map((quote) => quote.id))
+  if (!savedIds.has(state.modelQuoteDraft.sourceSavedQuoteId)) {
+    state.modelQuoteDraft.sourceSavedQuoteId = null
+  }
+}
+
 export function validateImportedState(candidate) {
   if (!candidate || typeof candidate !== 'object') {
     throw new Error('文件内容不是有效对象')
   }
   const migrated = cloneState(candidate)
   const sourceVersion = Number(migrated.version)
-  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, SCHEMA_VERSION].includes(sourceVersion)) {
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, SCHEMA_VERSION].includes(sourceVersion)) {
     throw new Error(`不支持的数据版本：${migrated.version ?? '未知'}`)
   }
   if (sourceVersion === 1) {
@@ -499,9 +642,15 @@ export function validateImportedState(candidate) {
     order.unitPrice = nonNegative(order.unitPrice)
   })
   migrated.oneTimeCosts.forEach((item) => {
-    if (!Object.hasOwn(item, 'depreciationMonths')) {
-      item.depreciationMonths = nonNegative(item.recoveryMonths)
-    }
+    const depreciationMonths = Object.hasOwn(item, 'depreciationMonths')
+      ? nonNegative(item.depreciationMonths)
+      : nonNegative(item.recoveryMonths)
+    item.depreciates = Object.hasOwn(item, 'depreciates')
+      ? Boolean(item.depreciates)
+      : depreciationMonths > 0
+    item.depreciationMonths = depreciationMonths > 0
+      ? depreciationMonths
+      : 36
     delete item.recoveryMonths
   })
   migrated.quoteSchemes.forEach((scheme) => {
@@ -531,6 +680,9 @@ export function validateImportedState(candidate) {
   })
   normalizeSingleQuoteScheme(migrated)
   normalizeFixedPaintingLevels(migrated)
+  normalizePieceworkState(migrated, sourceVersion)
+  normalizeProfitSettings(migrated)
+  normalizeModelQuoteState(migrated)
   migrated.version = SCHEMA_VERSION
 
   return migrated
