@@ -22,7 +22,14 @@ function uniqueRanks(levels) {
 }
 
 export function calculateStudioProfit(state) {
-  const monthlyRevenue = nonNegative(state.settings?.monthlyRevenue)
+  const usesModelRevenue = state.settings?.useModelRevenue === true
+  const revenue = usesModelRevenue ? calculateModelRevenue(state) : {
+    monthlyRevenue: nonNegative(state.settings?.monthlyRevenue),
+    monthlyPieceworkCost: 0,
+    itemResults: [],
+    errors: [],
+  }
+  const { monthlyRevenue, monthlyPieceworkCost, errors } = revenue
   const monthlyFixedCost = (state.fixedCosts ?? [])
     .reduce((sum, item) => sum + nonNegative(item.amount), 0)
   const oneTimeCostResults = (state.oneTimeCosts ?? []).map((item) => {
@@ -43,21 +50,29 @@ export function calculateStudioProfit(state) {
     .reduce((sum, item) => sum + item.amount, 0)
   const monthlyDepreciation = oneTimeCostResults
     .reduce((sum, item) => sum + item.monthlyDepreciation, 0)
-  const operatingCashProfit = monthlyRevenue - monthlyFixedCost
+  const operatingCashProfit = monthlyRevenue - monthlyPieceworkCost - monthlyFixedCost
   const monthlyProfit = operatingCashProfit - monthlyDepreciation
-  const paybackMonths = oneTimeInvestment <= EPSILON
-    ? 0
-    : operatingCashProfit > EPSILON
-      ? oneTimeInvestment / operatingCashProfit
-      : Infinity
-  const status = monthlyProfit > EPSILON
-    ? 'profit'
-    : monthlyProfit < -EPSILON
-      ? 'loss'
-      : 'break-even'
+  const paybackMonths = errors.length > 0
+    ? NaN
+    : oneTimeInvestment <= EPSILON
+      ? 0
+      : operatingCashProfit > EPSILON
+        ? oneTimeInvestment / operatingCashProfit
+        : Infinity
+  const status = errors.length > 0
+    ? 'invalid'
+    : monthlyProfit > EPSILON
+      ? 'profit'
+      : monthlyProfit < -EPSILON
+        ? 'loss'
+        : 'break-even'
 
   return {
+    usesModelRevenue,
+    revenueItemResults: revenue.itemResults,
+    errors,
     monthlyRevenue,
+    monthlyPieceworkCost,
     monthlyFixedCost,
     oneTimeCostResults,
     oneTimeInvestment,
@@ -92,6 +107,68 @@ export function calculateModelQuote(quote) {
     totalHours,
     externalPrice,
     quoteDifference: externalPrice - totalCost,
+  }
+}
+
+export function calculateModelRevenue(state) {
+  const quoteMap = new Map(
+    (state.savedModelQuotes ?? []).map((quote) => [quote.id, quote]),
+  )
+  const itemResults = (state.revenueItems ?? []).map((item) => {
+    const quote = quoteMap.get(item.savedQuoteId)
+    const quantity = item.quantity
+    const quoteError = quote ? '' : item.savedQuoteId
+      ? '报价方案已删除，请重新选择'
+      : '请选择报价方案'
+    const quantityError = Number.isSafeInteger(quantity) && quantity > 0
+      ? ''
+      : '数量须为正整数'
+    const errors = [quoteError, quantityError].filter(Boolean)
+    const quoteResult = quote ? calculateModelQuote(quote) : null
+    const revenue = errors.length === 0
+      ? quoteResult.externalPrice * quantity
+      : NaN
+    const pieceworkCost = errors.length === 0
+      ? quoteResult.totalCost * quantity
+      : NaN
+    if (
+      errors.length === 0
+      && (!Number.isFinite(revenue) || !Number.isFinite(pieceworkCost))
+    ) {
+      errors.push('金额超出计算范围')
+    }
+
+    return {
+      id: item.id,
+      quoteName: quote?.name ?? '',
+      quantity,
+      revenue,
+      pieceworkCost,
+      quoteError,
+      quantityError,
+      errors,
+    }
+  })
+  const errors = itemResults.flatMap((item, index) => (
+    item.errors.map((error) => `第 ${index + 1} 项：${error}`)
+  ))
+  const monthlyRevenue = itemResults.reduce((sum, item) => sum + item.revenue, 0)
+  const monthlyPieceworkCost = itemResults.reduce(
+    (sum, item) => sum + item.pieceworkCost,
+    0,
+  )
+  if (
+    errors.length === 0
+    && (!Number.isFinite(monthlyRevenue) || !Number.isFinite(monthlyPieceworkCost))
+  ) {
+    errors.push('合计金额超出计算范围')
+  }
+
+  return {
+    itemResults,
+    errors,
+    monthlyRevenue: errors.length === 0 ? monthlyRevenue : NaN,
+    monthlyPieceworkCost: errors.length === 0 ? monthlyPieceworkCost : NaN,
   }
 }
 

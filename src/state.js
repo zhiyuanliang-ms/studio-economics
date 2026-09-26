@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 17
 
 export const SKILL_LEVELS = [
   { rank: 1, name: '基础' },
@@ -10,6 +10,7 @@ export const defaultState = {
   version: SCHEMA_VERSION,
   settings: {
     monthlyRevenue: 10000,
+    useModelRevenue: false,
     expectedMonthlyRevenue: 0,
     targetMonthlyProfit: 5000,
     targetContributionMarginPct: 45,
@@ -67,6 +68,7 @@ export const defaultState = {
     ],
   },
   savedModelQuotes: [],
+  revenueItems: [],
   orderFeeRates: [
     { id: 'fee-materials', name: '持续耗材消耗', ratePct: 0.25 },
     { id: 'fee-shipping', name: '包装与运费', ratePct: 0.3 },
@@ -572,13 +574,41 @@ function normalizeModelQuoteState(state) {
   }
 }
 
+function normalizeRevenueState(state) {
+  if (!Object.hasOwn(state.settings, 'useModelRevenue')) {
+    state.settings.useModelRevenue = false
+  }
+  if (typeof state.settings.useModelRevenue !== 'boolean') {
+    throw new Error('营收计算模式必须是布尔值')
+  }
+  if (!Object.hasOwn(state, 'revenueItems')) state.revenueItems = []
+  assertArray(state.revenueItems, 'revenueItems')
+
+  const ids = new Set()
+  state.revenueItems = state.revenueItems.map((item) => {
+    if (
+      !item || typeof item.id !== 'string' || !item.id.trim() || ids.has(item.id)
+      || (item.savedQuoteId !== null && typeof item.savedQuoteId !== 'string')
+      || (item.quantity !== null && !Number.isFinite(item.quantity))
+    ) {
+      throw new Error('营收明细格式无效')
+    }
+    ids.add(item.id)
+    return {
+      id: item.id,
+      savedQuoteId: item.savedQuoteId,
+      quantity: item.quantity,
+    }
+  })
+}
+
 export function validateImportedState(candidate) {
   if (!candidate || typeof candidate !== 'object') {
     throw new Error('文件内容不是有效对象')
   }
   const migrated = cloneState(candidate)
   const sourceVersion = Number(migrated.version)
-  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, SCHEMA_VERSION].includes(sourceVersion)) {
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, SCHEMA_VERSION].includes(sourceVersion)) {
     throw new Error(`不支持的数据版本：${migrated.version ?? '未知'}`)
   }
   if (sourceVersion === 1) {
@@ -683,6 +713,7 @@ export function validateImportedState(candidate) {
   normalizePieceworkState(migrated, sourceVersion)
   normalizeProfitSettings(migrated)
   normalizeModelQuoteState(migrated)
+  normalizeRevenueState(migrated)
   migrated.version = SCHEMA_VERSION
 
   return migrated

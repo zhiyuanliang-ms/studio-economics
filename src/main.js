@@ -16,6 +16,9 @@ let profitResult = calculateStudioProfit(state)
 let quoteResult = calculateModelQuote(state.modelQuoteDraft)
 let activeTab = 'profit'
 let saveFailureNotified = false
+let quotePickerTrigger = null
+let quotePickerOptions = []
+let activeQuoteOption = -1
 
 const icons = {
   calculator: `
@@ -43,6 +46,22 @@ const icons = {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Z"></path>
       <path d="M4 6v5c0 1.7 3.6 3 8 3M4 11v5c0 1.5 2.8 2.7 6.5 3M17 16l4 4M21 16l-4 4"></path>
+    </svg>
+  `,
+  chevron: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m7 10 5 5 5-5"></path>
+    </svg>
+  `,
+  search: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="6.5"></circle>
+      <path d="m16 16 4 4"></path>
+    </svg>
+  `,
+  check: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m5 12 4 4L19 6"></path>
     </svg>
   `,
 }
@@ -89,9 +108,17 @@ app.innerHTML = `
     data-tab-panel="profit"
   >
     <div class="input-panel">
-      <div class="price-fields">
-        <label class="field">
-          <span>月营收</span>
+      <div class="price-fields revenue-fields">
+        <div class="revenue-heading">
+          <h2 id="revenue-heading">月营收</h2>
+          <label class="revenue-mode-toggle">
+            <input type="checkbox" role="switch" data-setting="useModelRevenue">
+            <span class="mini-toggle" aria-hidden="true"></span>
+            <span>订单</span>
+          </label>
+        </div>
+        <label class="field" id="manual-revenue-input">
+          <span class="sr-only">月营收</span>
           <span class="money-input">
             <span aria-hidden="true">¥</span>
             <input
@@ -103,6 +130,20 @@ app.innerHTML = `
             >
           </span>
         </label>
+        <div id="model-revenue-inputs" hidden>
+          <div class="revenue-input-summary">
+            <output id="calculated-revenue" aria-labelledby="revenue-heading">—</output>
+            <button
+              type="button"
+              class="icon-button add-button"
+              id="add-revenue-item"
+              aria-label="添加代工模型"
+              title="添加代工模型"
+            >${icons.plus}</button>
+          </div>
+          <div id="revenue-item-rows"></div>
+          <p class="revenue-error" id="revenue-error" role="status" hidden></p>
+        </div>
       </div>
 
       <div class="cost-block">
@@ -147,6 +188,10 @@ app.innerHTML = `
           <dt>月营收</dt>
           <dd id="monthly-revenue">—</dd>
         </div>
+        <div id="monthly-piecework-row" hidden>
+          <dt>画师计件成本</dt>
+          <dd id="monthly-piecework-cost">—</dd>
+        </div>
         <div>
           <dt>每月固定成本</dt>
           <dd id="monthly-fixed-cost">—</dd>
@@ -179,7 +224,16 @@ app.innerHTML = `
   >
     <div class="input-panel">
       <div class="quote-toolbar">
-        <select id="saved-model-quotes" aria-label="已保存报价方案"></select>
+        <button
+          type="button"
+          class="quote-trigger"
+          id="saved-model-quotes"
+          data-quote-picker
+          aria-label="已保存报价方案"
+          aria-haspopup="listbox"
+          aria-expanded="false"
+          aria-controls="quote-picker-options"
+        ></button>
         <div class="quote-actions">
           <button
             type="button"
@@ -267,8 +321,34 @@ app.innerHTML = `
     </aside>
   </main>
 
+  <div class="quote-picker" id="quote-picker" popover="auto">
+    <div class="quote-picker-search">
+      ${icons.search}
+      <input
+        type="search"
+        id="quote-picker-search"
+        role="combobox"
+        aria-label="搜索报价方案"
+        aria-autocomplete="list"
+        aria-controls="quote-picker-options"
+        aria-expanded="false"
+        autocomplete="off"
+        placeholder="搜索方案"
+      >
+    </div>
+    <div
+      class="quote-picker-options"
+      id="quote-picker-options"
+      role="listbox"
+      aria-label="已保存的报价方案"
+    ></div>
+    <p class="quote-picker-empty" id="quote-picker-empty" role="status" hidden></p>
+  </div>
   <div class="sr-only" id="live-status" aria-live="polite"></div>
 `
+
+const quotePicker = document.querySelector('#quote-picker')
+const quoteSearch = document.querySelector('#quote-picker-search')
 
 function loadState() {
   try {
@@ -319,13 +399,13 @@ function formatMoney(value, maximumFractionDigits = 0) {
   return `¥${value.toLocaleString('zh-CN', { maximumFractionDigits })}`
 }
 
-function formatSignedMoney(value) {
+function formatSignedMoney(value, maximumFractionDigits = 0) {
   const prefix = value > 0 ? '+' : value < 0 ? '−' : ''
-  return `${prefix}${formatMoney(Math.abs(value))}`
+  return `${prefix}${formatMoney(Math.abs(value), maximumFractionDigits)}`
 }
 
-function formatProfit(value) {
-  return `${formatSignedMoney(value)} / 月`
+function formatProfit(value, maximumFractionDigits = 0) {
+  return `${formatSignedMoney(value, maximumFractionDigits)} / 月`
 }
 
 function formatHours(value) {
@@ -373,6 +453,227 @@ function renderSettings() {
       input.value = state.settings[input.dataset.setting]
     }
   })
+}
+
+function createRevenueItem() {
+  return { id: createId('revenue'), savedQuoteId: null, quantity: 1 }
+}
+
+function renderRevenueItems() {
+  closeQuotePicker()
+  const quoteMap = new Map(state.savedModelQuotes.map((quote) => [quote.id, quote]))
+  document.querySelector('#revenue-item-rows').innerHTML = state.revenueItems
+    .map((item) => {
+      const quote = quoteMap.get(item.savedQuoteId)
+      const label = quote?.name || (item.savedQuoteId ? '方案已删除' : '选择报价方案')
+      return `
+        <div class="revenue-row" data-revenue-row="${escapeHtml(item.id)}">
+          <button
+            type="button"
+            class="quote-trigger"
+            data-quote-picker
+            data-revenue-quote="${escapeHtml(item.id)}"
+            aria-label="报价方案：${escapeHtml(label)}"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            aria-controls="quote-picker-options"
+            aria-describedby="revenue-error"
+            title="${escapeHtml(label)}"
+          ><span>${escapeHtml(label)}</span>${icons.chevron}</button>
+          <label class="revenue-quantity">
+            <span aria-hidden="true">×</span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              inputmode="numeric"
+              aria-label="模型数量"
+              aria-describedby="revenue-error"
+              data-revenue-quantity="${escapeHtml(item.id)}"
+              value="${escapeHtml(item.quantity ?? '')}"
+            >
+          </label>
+          <output class="revenue-subtotal" aria-label="营收小计">—</output>
+          <button
+            type="button"
+            class="icon-button remove-button"
+            data-remove-revenue="${escapeHtml(item.id)}"
+            aria-label="删除代工模型：${escapeHtml(label)}"
+            title="删除代工模型"
+          >${icons.trash}</button>
+        </div>
+      `
+    }).join('')
+}
+
+function closeQuotePicker({ restoreFocus = false } = {}) {
+  const trigger = quotePickerTrigger
+  if (quotePicker.matches(':popover-open')) quotePicker.hidePopover()
+  trigger?.setAttribute('aria-expanded', 'false')
+  quoteSearch.setAttribute('aria-expanded', 'false')
+  quoteSearch.removeAttribute('aria-activedescendant')
+  quotePickerTrigger = null
+  if (restoreFocus) trigger?.focus({ preventScroll: true })
+}
+
+function positionQuotePicker() {
+  if (!quotePicker.matches(':popover-open') || !quotePickerTrigger) return
+  const rect = quotePickerTrigger.getBoundingClientRect()
+  const viewport = globalThis.visualViewport
+  const left = viewport?.offsetLeft ?? 0
+  const top = viewport?.offsetTop ?? 0
+  const width = viewport?.width ?? document.documentElement.clientWidth
+  const height = viewport?.height ?? document.documentElement.clientHeight
+  if (rect.bottom <= top || rect.top >= top + height) {
+    closeQuotePicker()
+    return
+  }
+  const belowSpace = Math.max(0, top + height - rect.bottom - 18)
+  const aboveSpace = Math.max(0, rect.top - top - 18)
+  const below = belowSpace >= 294 || belowSpace >= aboveSpace
+  const menuWidth = Math.min(Math.max(rect.width, 320), width - 24)
+  quotePicker.style.width = `${menuWidth}px`
+  quotePicker.style.maxHeight = `${Math.min(294, below ? belowSpace : aboveSpace)}px`
+  quotePicker.style.left = `${Math.max(left + 12, Math.min(rect.left, left + width - menuWidth - 12))}px`
+  quotePicker.style.top = below
+    ? `${rect.bottom + 6}px`
+    : `${rect.top - quotePicker.getBoundingClientRect().height - 6}px`
+}
+
+function setActiveQuoteOption(index, scroll = false) {
+  activeQuoteOption = index
+  const options = quotePicker.querySelectorAll('[role="option"]')
+  options.forEach((option, optionIndex) => {
+    option.classList.toggle('is-active', optionIndex === index)
+  })
+  const activeOption = options[index]
+  if (activeOption) {
+    quoteSearch.setAttribute('aria-activedescendant', activeOption.id)
+    if (scroll) activeOption.scrollIntoView({ block: 'nearest' })
+  } else {
+    quoteSearch.removeAttribute('aria-activedescendant')
+  }
+}
+
+function renderQuotePickerOptions() {
+  const search = quoteSearch.value.trim().toLocaleLowerCase()
+  const revenueItemId = quotePickerTrigger?.dataset.revenueQuote
+  const quotes = revenueItemId ? state.savedModelQuotes : [
+    { id: '', name: '新方案' },
+    ...state.savedModelQuotes,
+  ]
+  quotePickerOptions = quotes.filter((quote) => (
+    quote.name.toLocaleLowerCase().includes(search)
+  ))
+  const selectedId = revenueItemId
+    ? state.revenueItems.find((item) => item.id === revenueItemId)?.savedQuoteId
+    : state.modelQuoteDraft.sourceSavedQuoteId ?? ''
+  document.querySelector('#quote-picker-options').innerHTML = quotePickerOptions
+    .map((quote, index) => `
+      <button
+        type="button"
+        class="quote-picker-option"
+        id="quote-option-${index}"
+        role="option"
+        tabindex="-1"
+        aria-selected="${quote.id === selectedId}"
+        data-select-quote="${escapeHtml(quote.id)}"
+        title="${escapeHtml(quote.name)}"
+      >
+        <span class="quote-option-check" aria-hidden="true">${icons.check}</span>
+        <span class="quote-option-name">${escapeHtml(quote.name)}</span>
+        <span class="quote-option-price">${quote.id ? formatMoney(quote.externalPrice, 2) : ''}</span>
+      </button>
+    `).join('')
+  const empty = document.querySelector('#quote-picker-empty')
+  empty.hidden = quotePickerOptions.length > 0
+  empty.textContent = revenueItemId && state.savedModelQuotes.length === 0
+    ? '请先在模型报价中保存方案'
+    : '无匹配方案'
+  const selectedIndex = quotePickerOptions.findIndex((quote) => quote.id === selectedId)
+  positionQuotePicker()
+  setActiveQuoteOption(
+    quotePickerOptions.length ? Math.max(0, selectedIndex) : -1,
+    true,
+  )
+}
+
+function openQuotePicker(trigger) {
+  if (
+    quotePickerTrigger === trigger
+    && quotePicker.matches(':popover-open')
+  ) {
+    closeQuotePicker({ restoreFocus: true })
+    return
+  }
+  closeQuotePicker()
+  quotePickerTrigger = trigger
+  quoteSearch.value = ''
+  renderQuotePickerOptions()
+  quotePicker.showPopover()
+  trigger.setAttribute('aria-expanded', 'true')
+  quoteSearch.setAttribute('aria-expanded', 'true')
+  positionQuotePicker()
+  quoteSearch.focus({ preventScroll: true })
+  setActiveQuoteOption(activeQuoteOption, true)
+}
+
+function selectQuoteOption(quoteId) {
+  const trigger = quotePickerTrigger
+  if (!trigger) return
+  const revenueItemId = trigger.dataset.revenueQuote
+  if (!revenueItemId) {
+    closeQuotePicker()
+    loadSavedQuote(quoteId)
+    if (quoteId) trigger.focus({ preventScroll: true })
+    return
+  }
+  const item = state.revenueItems.find((entry) => entry.id === revenueItemId)
+  const quote = state.savedModelQuotes.find((entry) => entry.id === quoteId)
+  if (!item || !quote) {
+    globalThis.alert('该明细或报价方案已不存在，请重新选择。')
+    closeQuotePicker()
+    recalculate({ renderAll: true })
+    return
+  }
+  item.savedQuoteId = quote.id
+  recalculate({ renderAll: true })
+  document.querySelector(
+    `[data-revenue-quote="${CSS.escape(item.id)}"]`,
+  )?.focus({ preventScroll: true })
+}
+
+function addRevenueItem() {
+  const item = createRevenueItem()
+  state.revenueItems.push(item)
+  recalculate({ renderAll: true })
+  openQuotePicker(document.querySelector(
+    `[data-revenue-quote="${CSS.escape(item.id)}"]`,
+  ))
+}
+
+function removeRevenueItem(id) {
+  const index = state.revenueItems.findIndex((item) => item.id === id)
+  if (index === -1) {
+    globalThis.alert('未找到要删除的营收明细。')
+    return
+  }
+  state.revenueItems.splice(index, 1)
+  recalculate({ renderAll: true })
+  document.querySelector('#add-revenue-item').focus()
+}
+
+function updateRevenueQuantity(input) {
+  const item = state.revenueItems.find(
+    (entry) => entry.id === input.dataset.revenueQuantity,
+  )
+  if (!item) {
+    globalThis.alert('营收明细已不存在。')
+    recalculate({ renderAll: true })
+    return
+  }
+  item.quantity = Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : null
+  recalculate()
 }
 
 function renderFixedCosts() {
@@ -480,13 +781,12 @@ function renderOneTimeCosts() {
 
 function renderQuoteToolbar() {
   const selectedId = state.modelQuoteDraft.sourceSavedQuoteId ?? ''
-  document.querySelector('#saved-model-quotes').innerHTML = [
-    '<option value="">新方案</option>',
-    ...state.savedModelQuotes.map((quote) => (
-      `<option value="${escapeHtml(quote.id)}" ${quote.id === selectedId ? 'selected' : ''}>`
-      + `${escapeHtml(quote.name)}</option>`
-    )),
-  ].join('')
+  const quote = state.savedModelQuotes.find((item) => item.id === selectedId)
+  const label = quote?.name ?? '新方案'
+  const trigger = document.querySelector('#saved-model-quotes')
+  trigger.innerHTML = `<span>${escapeHtml(label)}</span>${icons.chevron}`
+  trigger.title = label
+  trigger.setAttribute('aria-label', `已保存报价方案：${label}`)
   document.querySelector('#delete-saved-quote').disabled = !selectedId
 }
 
@@ -556,8 +856,31 @@ function renderQuoteEditor() {
 }
 
 function renderProfitResults() {
+  const hasErrors = profitResult.errors.length > 0
+  const precision = profitResult.usesModelRevenue ? 2 : 0
+  document.querySelector('#manual-revenue-input').hidden = profitResult.usesModelRevenue
+  document.querySelector('#model-revenue-inputs').hidden = !profitResult.usesModelRevenue
+  document.querySelector('#calculated-revenue').textContent = formatMoney(
+    profitResult.monthlyRevenue,
+    2,
+  )
+  const revenueError = document.querySelector('#revenue-error')
+  revenueError.hidden = !hasErrors
+  revenueError.textContent = profitResult.errors[0] ?? ''
+  profitResult.revenueItemResults.forEach((item) => {
+    const row = document.querySelector(`[data-revenue-row="${CSS.escape(item.id)}"]`)
+    row.querySelector('.revenue-subtotal').textContent = formatMoney(item.revenue, 2)
+    row.querySelector('[data-revenue-quote]').setAttribute(
+      'aria-invalid', String(Boolean(item.quoteError)),
+    )
+    row.querySelector('[data-revenue-quantity]').setAttribute(
+      'aria-invalid', String(Boolean(item.quantityError)),
+    )
+  })
+
   const panel = document.querySelector('#profit-panel .result-panel')
   panel.classList.toggle('is-loss', profitResult.status === 'loss')
+  panel.classList.toggle('has-error', hasErrors)
   panel.classList.toggle(
     'is-break-even',
     profitResult.status === 'break-even',
@@ -567,13 +890,21 @@ function renderProfitResults() {
     profit: '预计月利润',
     loss: '预计月亏损',
     'break-even': '月度盈亏平衡',
+    invalid: '待完善营收明细',
   }
   document.querySelector('#profit-label').textContent = labels[profitResult.status]
-  document.querySelector('#monthly-profit').textContent = formatProfit(
+  document.querySelector('#monthly-profit').textContent = hasErrors ? '—' : formatProfit(
     profitResult.monthlyProfit,
+    precision,
   )
   document.querySelector('#monthly-revenue').textContent = formatMoney(
     profitResult.monthlyRevenue,
+    precision,
+  )
+  document.querySelector('#monthly-piecework-row').hidden = !profitResult.usesModelRevenue
+  document.querySelector('#monthly-piecework-cost').textContent = formatMoney(
+    profitResult.monthlyPieceworkCost,
+    2,
   )
   document.querySelector('#monthly-fixed-cost').textContent = formatMoney(
     profitResult.monthlyFixedCost,
@@ -584,7 +915,7 @@ function renderProfitResults() {
   document.querySelector('#one-time-investment').textContent = formatMoney(
     profitResult.oneTimeInvestment,
   )
-  document.querySelector('#payback-period').textContent = formatPaybackPeriod(
+  document.querySelector('#payback-period').textContent = hasErrors ? '—' : formatPaybackPeriod(
     profitResult.paybackMonths,
   )
 }
@@ -609,6 +940,7 @@ function recalculate({ renderAll = false, persistState = true } = {}) {
   quoteResult = calculateModelQuote(state.modelQuoteDraft)
   if (renderAll) {
     renderSettings()
+    renderRevenueItems()
     renderFixedCosts()
     renderOneTimeCosts()
     renderQuoteEditor()
@@ -619,6 +951,7 @@ function recalculate({ renderAll = false, persistState = true } = {}) {
 }
 
 function setActiveTab(tabName) {
+  closeQuotePicker()
   activeTab = tabName === 'quote' ? 'quote' : 'profit'
   document.querySelectorAll('[data-tab]').forEach((button) => {
     const selected = button.dataset.tab === activeTab
@@ -753,7 +1086,11 @@ function deleteSavedQuote() {
   const index = state.savedModelQuotes.findIndex((quote) => quote.id === id)
   if (index === -1) return
   const quote = state.savedModelQuotes[index]
-  if (!globalThis.confirm(`删除“${quote.name}”？`)) return
+  const references = state.revenueItems.filter((item) => item.savedQuoteId === id).length
+  const warning = references > 0
+    ? `有 ${references} 条营收明细引用此方案，删除后需要重新选择。`
+    : ''
+  if (!globalThis.confirm(`删除“${quote.name}”？${warning}`)) return
 
   state.savedModelQuotes.splice(index, 1)
   state.modelQuoteDraft = createQuoteDraft()
@@ -781,7 +1118,11 @@ function updateInput(input) {
     state.settings[input.dataset.setting] = input.type === 'checkbox'
       ? input.checked
       : toNonNegativeNumber(input.value)
-    recalculate()
+    const changedRevenueMode = input.dataset.setting === 'useModelRevenue'
+    if (changedRevenueMode && input.checked && state.revenueItems.length === 0) {
+      state.revenueItems.push(createRevenueItem())
+    }
+    recalculate({ renderAll: changedRevenueMode })
     return
   }
 
@@ -838,18 +1179,14 @@ function updateQuoteStepInput(input) {
 
 app.addEventListener('input', (event) => {
   const input = event.target
-  if (input.matches('input[data-quote-field]')) {
+  if (input.matches('input[data-revenue-quantity]')) {
+    updateRevenueQuantity(input)
+  } else if (input.matches('input[data-quote-field]')) {
     updateQuoteInput(input)
   } else if (input.matches('input[data-step-field]')) {
     updateQuoteStepInput(input)
   } else if (input.matches('input[data-setting], input[data-collection]')) {
     updateInput(input)
-  }
-})
-
-app.addEventListener('change', (event) => {
-  if (event.target.matches('#saved-model-quotes')) {
-    loadSavedQuote(event.target.value)
   }
 })
 
@@ -861,6 +1198,25 @@ app.addEventListener('click', (event) => {
   }
   if (event.target.closest('#clear-storage')) {
     clearStoredData()
+    return
+  }
+  if (event.target.closest('#add-revenue-item')) {
+    addRevenueItem()
+    return
+  }
+  const pickerTrigger = event.target.closest('[data-quote-picker]')
+  if (pickerTrigger) {
+    openQuotePicker(pickerTrigger)
+    return
+  }
+  const quoteOption = event.target.closest('[data-select-quote]')
+  if (quoteOption) {
+    selectQuoteOption(quoteOption.dataset.selectQuote)
+    return
+  }
+  const removeRevenueButton = event.target.closest('[data-remove-revenue]')
+  if (removeRevenueButton) {
+    removeRevenueItem(removeRevenueButton.dataset.removeRevenue)
     return
   }
 
@@ -893,6 +1249,50 @@ app.addEventListener('click', (event) => {
     removeItem(removeButton.dataset.remove, removeButton.dataset.id)
   }
 })
+
+quoteSearch.addEventListener('input', renderQuotePickerOptions)
+quoteSearch.addEventListener('keydown', (event) => {
+  if (event.isComposing) return
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    const count = quotePickerOptions.length
+    if (count > 0) {
+      const delta = event.key === 'ArrowDown' ? 1 : -1
+      setActiveQuoteOption((activeQuoteOption + delta + count) % count, true)
+    }
+  } else if (event.key === 'Enter') {
+    event.preventDefault()
+    const quote = quotePickerOptions[activeQuoteOption]
+    if (quote) selectQuoteOption(quote.id)
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    closeQuotePicker({ restoreFocus: true })
+  } else if (event.key === 'Tab') {
+    closeQuotePicker({ restoreFocus: true })
+  }
+})
+
+app.addEventListener('keydown', (event) => {
+  const trigger = event.target.closest('[data-quote-picker]')
+  if (trigger && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+    event.preventDefault()
+    openQuotePicker(trigger)
+  }
+})
+
+quotePicker.addEventListener('toggle', (event) => {
+  if (event.newState === 'closed' && !quotePicker.matches(':popover-open')) {
+    closeQuotePicker()
+  }
+})
+
+globalThis.addEventListener('resize', positionQuotePicker)
+globalThis.visualViewport?.addEventListener('resize', positionQuotePicker)
+globalThis.addEventListener('scroll', (event) => {
+  if (!(event.target instanceof Node) || !quotePicker.contains(event.target)) {
+    positionQuotePicker()
+  }
+}, true)
 
 globalThis.addEventListener('storage', (event) => {
   if (event.key !== STORAGE_KEY) return
